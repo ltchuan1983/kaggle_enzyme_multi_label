@@ -2,6 +2,7 @@ import argparse
 import json
 import yaml
 
+
 import pandas as pd
 import numpy as np
 
@@ -30,11 +31,14 @@ from imblearn import FunctionSampler
 from keras.models import Sequential
 from keras.layers import Dense
 
+from skopt import BayesSearchCV
+from skopt.space import Real, Categorical, Integer
+
 
 from helper_functions import load_data, multilabel_print_scores, multiclass_print_scores, binary_print_scores, remove_feature, remove_outliers_IsolationForest, MultiLabelClassifier
 from helper_functions import check_required_args, validate_n_components, make_nn_model, create_powerset
 
-from pipelines import ID_Remover, make_ovr_pipe, make_br_pipe, make_cc_pipe, make_lp_pipe, make_lp_ex_pipe, make_lp_pca_pipe, make_lp_GSCV_pipe, make_lp_brfc_pipe, make_multiclass_pipe, make_binary_pipe
+from pipelines import ID_Remover, make_ovr_pipe, make_br_pipe, make_cc_pipe, make_lp_pipe, make_lp_ex_pipe, make_lp_pca_pipe, make_lp_GSCV_pipe, make_lp_brfc_pipe, make_multiclass_pipe, make_binary_pipe, make_simplegrid_pipe
 
 # GLOBAL CONFIG VARIABLES
 CONTAMINATION = 0.08
@@ -210,15 +214,16 @@ def run_gridsearch():
 
     param_grid = {
         'pca__n_components': N_COMPONENTS_PARAM,
-        'lp_rf__classifier__n_estimators': N_ESTIMATORS_PARAM
+        'rf__n_estimators': N_ESTIMATORS_PARAM
+        #'lp_rf__classifier__n_estimators': N_ESTIMATORS_PARAM
     }
 
     # Create the GridSearchCV object
 
     try:
-        GSCV_pipe = make_lp_GSCV_pipe()
+        simplegrid_pipe = make_simplegrid_pipe(numerical_features, categorical_features)
         grid_search = GridSearchCV(
-                            estimator=GSCV_pipe, 
+                            estimator=simplegrid_pipe, 
                             param_grid = param_grid,
                             cv=5, #default is StratifiedKFold
                             scoring='accuracy')
@@ -226,7 +231,7 @@ def run_gridsearch():
         # Fit training data. Grid Search object will perform grid search and 
         # then fit the estimator with the best params
 
-        grid_search.fit(X_train, y_train)
+        grid_search.fit(X_train, y_train_multiclass)
     except:
         raise RuntimeError("Check list of numbers for -c -e")
 
@@ -239,9 +244,37 @@ def run_gridsearch():
 
     #best_model.fit(X_train, y_train)
     y_pred = best_model.predict(X_test)
-    score = accuracy_score(y_test, y_pred)
+    score = accuracy_score(y_test_multiclass, y_pred)
     
     print(f"The accuracy score of best model from gridsearchcv is {score}")
+
+def run_bayes():
+    print("Running Bayesian Optimization")
+
+    search_space = {
+        'pca__n_components': Real(0.92, 0.98),
+        'rf__n_estimators': Integer(50, 120)
+    }
+
+    bayes_pipe = make_simplegrid_pipe(numerical_features, categorical_features)
+    lp_bayes_search = BayesSearchCV(bayes_pipe, search_space, n_iter=32,
+                                    scoring="accuracy", n_jobs=-1, cv=5)
+    # n_jobs=-1 -> number of jobs set to number of CPU cores
+
+    def on_step(optim_result):
+        """Callback to print score after each iteration"""
+        print(f"Iteration {optim_result.func_vals.shape[0]}, Best Score: {-optim_result.fun.max()}")
+        # score = -optim_result.fun
+        # print("best score: %s" % score)
+        # if score >= 0.98:
+        #     print('Interrupting!')
+        #     return True
+    
+    np.int = int # Because np.int deprecated
+
+    lp_bayes_search.fit(X_train, y_train_multiclass, callback=on_step) #on_step prints score after each iteration
+    print(lp_bayes_search.best_params_)
+    print(lp_bayes_search.best_score_)
 
 def run_nn():
     """ Create keras fully connect model using make_nn_model, fit, predict and compute
@@ -279,6 +312,10 @@ def main():
     if MODE == "nn":
         
         run_nn()
+    
+    if MODE == "bayes":
+
+        run_bayes()
 
 
 if __name__ == "__main__":
@@ -320,7 +357,6 @@ if __name__ == "__main__":
 
     # Calculate sample weights
     sample_weights = compute_sample_weight(class_weight=dict(zip(all_classes, class_weights)), y=y_train_multiclass)
-    
 
     main()
 

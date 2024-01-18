@@ -218,9 +218,10 @@ def make_lp_GSCV_pipe(numerical_features, categorical_features):
 
     lp_GSCV_pipe = Pipeline([
         ('id_remover', ID_Remover),
-        ('preprocessor', preprocessor),
+        ('scaler', StandardScaler()),
+        ('pca', PCA()),
         ('to_dataframe2', FunctionTransformer(lambda x: pd.DataFrame(x))),
-    #     ('lp_rf', MultiLabelClassifier(estimator=AdaBoostClassifier, classifier=LabelPowerset))
+        #('lp_rf', MultiLabelClassifier(estimator=AdaBoostClassifier, classifier=LabelPowerset))
         ('lp_rf', LabelPowerset(AdaBoostClassifier())) #default n_estimators = 50
     ])
 
@@ -287,6 +288,47 @@ def make_binary_pipe():
     ])
 
     return binary_pipe
+
+def make_simplegrid_pipe(numerical_features, categorical_features):
+
+    """ Pipe performing multiclass classification with CatBoostClassifier
+    
+    Pipe to be used when command line argument mode = "grid" 
+
+    Parameters:
+    -----------
+    numerical_features: list
+        list of str containing label names for the numerical features
+
+    categorical_features: list
+        list of str containing label names for the categorical features
+
+    Returns:
+    --------
+    Pipeline
+
+    """
+
+    simplegrid_pipe = IMBPipeline([
+        ('id_remover', ID_Remover),
+        ('scaler', StandardScaler()),
+        ('pca', PCA()),
+        ('to_dataframe2', FunctionTransformer(lambda x: pd.DataFrame(x))),
+        ('rf', RandomForestClassifier())
+        #('cat', CatBoostClassifier(auto_class_weights="Balanced", verbose=0, l2_leaf_reg=7))
+    ])
+
+    # SMOTE did not improve performance and was therefore left out. 
+
+    # multiclass_pipe = Pipeline([
+    #     ('id_remover', ID_Remover),
+    #     ('scaler', StandardScaler()),
+    #     ('pca', PCA()),
+    #     ('to_dataframe2', FunctionTransformer(lambda x: pd.DataFrame(x))),
+    #     ('ada', CatBoostClassifier(loss_function="MultiClass", auto_class_weights="Balanced", verbose=0, l2_leaf_reg=7)) #default n_estimators = 50
+    # ])
+
+    return simplegrid_pipe
 
 def make_lp_brfc_pipe(numerical_features, categorical_features):
     """Pipe running LabelPowerset using EasyEnsembleClassifier as base estimator
