@@ -1,4 +1,7 @@
 import pandas as pd
+import numpy as np
+import sqlite3
+import json
 
 
 from sklearn.base import BaseEstimator, TransformerMixin, ClassifierMixin
@@ -10,53 +13,66 @@ from skmultilearn.problem_transform import LabelPowerset
 
 import argparse
 
+import tensorflow as tf
 from keras.models import Sequential
-from keras.layers import Dense
+from keras.layers import Dense, Dropout, BatchNormalization
 
 
-def load_data(traindata_filepath, all_labels, target_labels, labels_to_drop):
+def load_data(config):
     """ Load and process traindata
 
-    Load data from given filepath, add features, split features from labels, split into train and test set
-    (Not using a separate test dataset, but using the split set from train data as the test set)
+    Load data using filepath and labels_to_drop from config passed into the function
+    Add engineered features to enrich learning 
 
     Parameters
     ----------
-    traindata_filepath: str
-        String detailing the path for train data
-    
-    all_labels: list
-        list of strings spelling the name of all the labels. Sourced from config files
-    
-    target_labels: list
-        list of strings spelling the name of target labels. Sourced from config files
-    
-    labels_to_drop: list
-        list of strings spelling the name of labels not part of the problem and therefore to
-        be dropped. Sourced from config files
-
+    config: JSON object
+        JSON object providing the filepath (str) and labels_to_drop (list of str)
         
     Returns
     -------
-    DataFrame, DataFrame, DataFrame, DataFrame, list, list
-        train features, train labels, test features, test labels, numerical features, categorical features
+    DataFrame
+        Dataset containing 2 labels "EC1" and "EC2"
     """
+
+    traindata_filepath = config["load_data"]["traindata_filepath"]
+    labels_to_drop = config["load_data"]["labels_to_drop"]
 
     # Load dataset
     df = pd.read_csv(traindata_filepath)
+
+    # Add newly engineered features
     df = add_features(df)
 
-    all_columns = df.columns.tolist()
-    # all_labels = ['EC1', 'EC2', 'EC3', 'EC4', 'EC5', 'EC6']
-    # target_labels = ['EC1', 'EC2']
-
-    features = [column for column in all_columns if column not in all_labels]
-    features_no_id = [column for column in all_columns if column not in all_labels and column != 'id']
-
-    categorical_features = ['fr_COO', 'fr_COO2']
-    numerical_features = [feature for feature in features_no_id if feature not in categorical_features]
-
+    # Drop unnecessary target columns
     df = df.drop(columns=labels_to_drop)
+
+    return df
+
+def split_data(df, config):
+    """  Function to split features from labels, split into train and test set
+    (Not using a separate test dataset, but using the split set from train data as the test set)
+    
+    Parameters:
+    -----------
+    df: DataFrame
+        DataFrame containing the whole dataset
+    
+    config: JSON object
+        JSON object providing all_labels (list of str), target_labels (list of str) and categorical_features (list of str)
+    """
+
+    # all_labels, target_labels, labels_to_drop from config.py
+    target_labels = config["load_data"]["target_labels"]
+    categorical_features = config["features"]["categorical_features"]
+
+    all_columns = df.columns.tolist()
+    
+
+    features = [column for column in all_columns if column not in target_labels]
+    features_no_id = [column for column in all_columns if column not in target_labels and column != 'id']
+
+    numerical_features = [feature for feature in features_no_id if feature not in categorical_features]
 
     # Split dataset into X and y
     X = df[features]
@@ -67,6 +83,114 @@ def load_data(traindata_filepath, all_labels, target_labels, labels_to_drop):
     print(f'No. of datapoints in test dataset: {len(X_test)}')
 
     return X_train, X_test, y_train, y_test, numerical_features, categorical_features
+
+# Define a mapping function for DataFrame data types to SQLite data types
+def map_dtype_to_sqlite(dtype):
+    if dtype == 'int64':
+        return 'INTEGER'
+    elif dtype == 'float64':
+        return 'REAL'
+    elif dtype.startswith('datetime'):
+        return 'TEXT'  # Assuming datetime columns should be stored as text
+    else:
+        return 'TEXT'  # Default to TEXT for other types
+
+def save_data_to_db(df, db_name):
+
+    # Connect to the SQLite Database
+    conn = sqlite3.connect('enzyme_multilabel.db')
+    cursor = conn.cursor()
+
+    # Create the table data dynamically based on the df provided
+    # Column headings not in quotes
+    # Function to map pandas dtypes to sqlite dtypes
+    columns_and_types = ', '.join([f'{col} {map_dtype_to_sqlite(df[col].dtype)}' for col in df.columns])
+ 
+
+    # Set unqiue constraint on id column so that duplicate rows are not added in future
+    cursor.execute(f"CREATE TABLE IF NOT EXISTS {db_name} ({columns_and_types}, UNIQUE(id))")
+    # cursor.execute("ALTER TABLE data ADD CONSTRAINT unique_id UNIQUE (id)")
+
+
+    # Extract column headings
+    columns = df.columns.tolist()
+
+    # Need to put column headings in quotes to refer properly
+    columns_quoted = [f"'{column}'" for column in columns]
+    columns_str = ', '.join(columns_quoted)
+
+    # Create SQL query dynamically
+    query = f"INSERT OR IGNORE INTO {db_name} ({columns_str}) VALUES ({', '.join(['?']*len(columns))})"
+
+    # Convert DataFrame rows into tuples
+    data_tuples = [tuple(row) for row in df.values]
+    
+    # Insert data into db using executemany
+    cursor.executemany(query, data_tuples)
+
+    # Execute a query to retrieve 5 random rows
+    # cursor.execute('SELECT * FROM data ORDER BY RANDOM() LIMIT 5')
+
+    # Fetch the results
+    # rows = cursor.fetchall()
+
+    # Print the results
+    # for row in rows:
+    #     print(row)
+
+    # Execute a query to get the number of columns and rows
+    cursor.execute(f'PRAGMA table_info({db_name})')
+    columns_info = cursor.fetchall()
+
+    # Get the number of columns
+    num_columns = len(columns_info)
+
+    # Execute a query to get the number of rows
+    cursor.execute(f'SELECT COUNT(*) FROM {db_name}')
+    num_rows = cursor.fetchone()[0]
+
+    # Print the results
+    print(f'Number of columns in {db_name}: {num_columns}')
+    print(f'Number of rows in {db_name}: {num_rows}')
+
+    # Extract column headings from the fetched results
+    column_headings = [column[1] for column in columns_info]
+
+    # Column headings are in quotes
+    # print(column_headings)
+
+    # Commit changes and close the connection
+    conn.commit()
+    conn.close()
+
+def datagen_from_db(batch_size):
+    conn = sqlite3.connect("enzyme_multilabel.db", check_same_thread=False)
+    cursor = conn.cursor()
+    offset = 0
+
+    while True:
+
+        sql = f"""
+            SELECT *
+            FROM data_train_multiclass
+            LIMIT {batch_size}
+            OFFSET {offset}
+        """
+
+        cursor.execute(sql)
+        data = cursor.fetchall()
+        # data returned is a list
+
+        if not data:
+            # If there is no more data, reset the offset to start from the beginning
+            offset = 0
+            continue
+
+        X = [row[:-1] for row in data]
+        y = [row[-1] for row in data]
+        # offset specifies how many rows to skip before selecting the rows
+        offset += batch_size
+        yield np.asarray(X), np.asarray(y)
 
 
 class MultiLabelClassifier(BaseEstimator, ClassifierMixin): # Take note to inherit ClassifierMixin, not TransformerMixin
@@ -336,7 +460,7 @@ def validate_n_components(value):
     else:
         raise argparse.ArgumentTypeError(f"Value must be between 0 and 1 (inclusive)")
 
-def make_nn_model(n_inputs, n_outputs):
+def make_nn_model(n_inputs, n_outputs, random_seed=808):
     """ Make a fully connected neural network using keras
     
     Create a fully connected neural network comprising of 1x input layer, 1x hidden layer and 1x output layer.
@@ -355,12 +479,64 @@ def make_nn_model(n_inputs, n_outputs):
         Model that can be used for fitting and predicting
         
     """
+    np.random.seed(random_seed)
+    tf.random.set_seed(random_seed)
 
     model = Sequential()
-    model.add(Dense(32, input_dim=n_inputs, kernel_initializer='he_uniform', activation='relu'))
-    model.add(Dense(8, input_dim=n_inputs, kernel_initializer='he_uniform', activation='relu'))
-    model.add(Dense(n_outputs, activation='sigmoid'))
-    model.compile(loss='binary_crossentropy', optimizer='adam')
+    model.add(Dense(128, input_dim=n_inputs, kernel_initializer='he_uniform', activation='relu'))
+    model.add(Dense(32, kernel_initializer='he_uniform', activation='relu'))
+    model.add(Dropout(0.5, seed=random_seed))
+    model.add(Dense(n_outputs, activation='softmax'))
+    model.compile(loss='sparse_categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+    return model
+
+def make_tunable_nn_model(hp):
+    """ Make a tunable neural network using keras and keras-tuner
+    
+    Create a fully connected neural network comprising of 1x input layer, 1x hidden layer and 1x output layer.
+    
+    Parameters
+    ----------
+    n_inputs: int
+            Number of inputs i.e. number of features
+            
+    n_output: int
+            Number of outputs i.e. number of labels to predict per datapoint
+    
+    Returns
+    -------
+    Keras Sequential model
+        Model that can be used for fitting and predicting
+        
+    """
+    random_seed = config["RANDOM_SEED"]
+    np.random.seed(random_seed)
+    tf.random.set_seed(random_seed)
+
+    model = Sequential()
+
+    # Input layer
+    model.add(Dense(units=hp.Int('input_dense', min_value=64, max_value=512, step=16), input_dim=47, kernel_initializer='he_uniform', activation='relu'))
+
+    # Tunable number of blocks containing one dense and one dropout layer
+    for i in range(hp.Int('num_dense_dropout', 1, 2)):
+        model.add(Dense(units=hp.Int('hidden_dense', min_value=16, max_value=64, step=16), kernel_initializer='he_uniform', activation='relu'))
+        model.add(Dropout(hp.Float('hidden_dropout', min_value=0.0, max_value=0.5, step=0.1)))
+
+    # Output layer
+    model.add(Dense(4, activation='softmax'))
+
+    # Setting up choices for different optimizers
+    hp_optimizer = hp.Choice("Optimizer", values=['Adam', 'SGD'])
+
+    if hp_optimizer == 'Adam':
+        hp_learning_rate = hp.Choice('learning_rate', values=[1e-1, 1e-2, 1e-3])
+    elif hp_optimizer == 'SGD':
+        hp_learning_rate = hp.Choice('learning_rate', values=[1e-1, 1e-2, 1e-3])
+        nesterov = True
+        momentum = 0.9
+    
+    model.compile(loss='sparse_categorical_crossentropy', optimizer=hp_optimizer, metrics=['accuracy'])
     return model
 
 def create_powerset(y_train, y_test):
@@ -423,8 +599,8 @@ def add_features(df):
     """
 
     df['SpanEstateIndex'] = df['MaxAbsEStateIndex'] - df['MinEStateIndex']
-    df['MaxEstate%'] = df['MaxAbsEStateIndex'] / (df['SpanEstateIndex'] + 1e-12)
-    df['MinEstate%'] = df['MinEStateIndex'] / (df['SpanEstateIndex'] + 1e-12)
+    df['MaxEstate_percent'] = df['MaxAbsEStateIndex'] / (df['SpanEstateIndex'] + 1e-12)
+    df['MinEstate_percent'] = df['MinEStateIndex'] / (df['SpanEstateIndex'] + 1e-12)
     df['BertzCT_MaxAbsEStateIndex_Ratio'] = df['BertzCT'] / (df['MaxAbsEStateIndex'] + 1e-12)
     df['BertzCT_ExactMolWt_Product'] = df['BertzCT'] * df['ExactMolWt']
     df['NumHeteroatoms_FpDensityMorgan1_Ratio'] = df['NumHeteroatoms'] / (df['FpDensityMorgan1'] + 1e-12)
@@ -439,3 +615,11 @@ def add_features(df):
     df['BertzCT_Chi1_Ratio'] = df['BertzCT'] / (df['Chi1'] + 1e-12)
 
     return df
+
+# Read config.py
+try:
+    with open('../config.py', "r") as inp:
+        config = json.load(inp)
+
+except:
+    raise FileNotFoundError("config.py is not found")

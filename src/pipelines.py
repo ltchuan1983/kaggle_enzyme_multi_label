@@ -7,7 +7,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
 
 from sklearn.ensemble import IsolationForest
-from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, StackingClassifier
 from sklearn.ensemble import AdaBoostClassifier, VotingClassifier
 from imblearn.ensemble import BalancedRandomForestClassifier, EasyEnsembleClassifier, BalancedBaggingClassifier
 
@@ -232,7 +232,6 @@ def make_multiclass_pipe(numerical_features, categorical_features):
     """ Pipe performing multiclass classification with voting classifier
     
     Perform Standard Scaling and PCA on numerical features. Perform one-hot encoding on categorical features.
-    Pipe to be used when command line argument mode = "grid" 
 
     Parameters:
     -----------
@@ -347,3 +346,71 @@ def make_lp_brfc_pipe(numerical_features, categorical_features):
     ])
 
     return lp_bfrc_pipe
+
+def make_stacking_pipe(numerical_features, categorical_features):
+
+    """ Pipe performing multiclass classification with stacking ensemble
+    
+    Perform Standard Scaling and PCA on numerical features. Perform one-hot encoding on categorical features.
+
+    Parameters:
+    -----------
+    numerical_features: list
+        list of str containing label names for the numerical features
+
+    categorical_features: list
+        list of str containing label names for the categorical features
+
+    Returns:
+    --------
+    Pipeline
+
+    """
+
+    preprocessor = make_preprocessor(numerical_features, categorical_features)
+
+    # voting_clf = VotingClassifier([
+    # ('cat', CatBoostClassifier(n_estimators=100, loss_function="MultiClass", auto_class_weights="Balanced", verbose=0, l2_leaf_reg=12, depth=6)),
+    # ('et', ExtraTreesClassifier(n_estimators=100, min_samples_leaf=30, random_state=1)),
+    # ('lr', make_pipeline(PolynomialFeatures(2, include_bias=True),
+    #                         LogisticRegression(C=0.01, max_iter=700))),
+    # ('knn', KNeighborsClassifier(n_neighbors=500, weights='distance'))
+
+    # ], 
+    # voting='soft',
+    # weights=[0.3, 0.2, 0.4, 0.1]
+    # )
+
+    # Create base learners
+    
+    base_learners_1 = [
+                    ('knn', KNeighborsClassifier(n_neighbors=500, weights='distance')), 
+                    # ('lr', make_pipeline(PolynomialFeatures(2, include_bias=True),
+                    #          LogisticRegression(C=0.01, max_iter=700)))
+
+    ]
+    
+    base_learners_2 = [
+                    ('cat', CatBoostClassifier(n_estimators=500, loss_function="MultiClass", auto_class_weights="Balanced", verbose=0, l2_leaf_reg=12, depth=6)),
+                    # ('knn', KNeighborsClassifier(n_neighbors=500, weights='distance')), 
+                    # ('lr', make_pipeline(PolynomialFeatures(2, include_bias=True),
+                    #          LogisticRegression(C=0.01, max_iter=700)))
+
+    ]
+
+    # Initialize stacking classifiers
+
+    # layer_2 = StackingClassifier(estimators=base_learners_2, final_estimator=LogisticRegression(C=0.01, max_iter=700))
+
+    # stackclf = StackingClassifier(estimators=base_learners_1, final_estimator=layer_2)
+
+    stackclf = StackingClassifier(estimators=base_learners_2, final_estimator=LogisticRegression(C=0.01, max_iter=700))
+
+    stacking_pipe = IMBPipeline([
+        ('id_remover', ID_Remover),
+        ('preprocessor', preprocessor),
+        ('to_dataframe2', FunctionTransformer(lambda x: pd.DataFrame(x))),
+        ('stack', stackclf)
+    ])
+
+    return stacking_pipe
